@@ -1,6 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import Papa from "papaparse";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -14,7 +13,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Download, Play, Upload } from "lucide-react";
+import { Download, Play, Eraser, Wand2 } from "lucide-react";
+
 import { AppLayout } from "@/components/AppLayout";
 import { PageHeader, SectionTitle, StatCard } from "@/components/PageHeader";
 import { Field, SelectInput } from "@/components/Field";
@@ -132,32 +132,134 @@ function PricingPage() {
   const [lossRatio, setLossRatio] = useState(1);
   const [distChoice, setDistChoice] = useState<DistributionChoice>("auto");
   const [triggerType, setTriggerType] = useState<TriggerType>("excess");
-  const [uploaded, setUploaded] = useState<
-    Map<string, { entry: number; exit: number }>
-  >(new Map());
-  const [uploadedName, setUploadedName] = useState<string | null>(null);
+  const [thresholdRows, setThresholdRows] = useState<
+    { risk: string; entry: string; exit: string }[]
+  >([]);
+  const [thresholdSearch, setThresholdSearch] = useState("");
+  const [selectedRisks, setSelectedRisks] = useState<Set<string>>(new Set());
+  const [fillEntry, setFillEntry] = useState("");
+  const [fillExit, setFillExit] = useState("");
   const [result, setResult] = useState<PricingOutput | null>(null);
   const [analysisRisk, setAnalysisRisk] = useState<string>("");
 
-  const handleFile = (file: File) => {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (res) => {
-        const m = new Map<string, { entry: number; exit: number }>();
-        for (const row of res.data as Record<string, string>[]) {
-          const risk = row.Risk ?? row.risk;
-          const entry = Number(row.Entry ?? row.entry);
-          const exit = Number(row.Exit ?? row.exit);
-          if (risk && Number.isFinite(entry) && Number.isFinite(exit)) {
-            m.set(risk, { entry, exit });
-          }
-        }
-        setUploaded(m);
-        setUploadedName(file.name);
-      },
+  // Auto-populate rows from dataset risks
+  const datasetRisks = useMemo(() => {
+    if (!dataset) return [] as string[];
+    const s = new Set<string>();
+    for (const r of dataset) s.add(r.risk);
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [dataset]);
+
+  useEffect(() => {
+    setThresholdRows((prev) => {
+      const byRisk = new Map(prev.map((r) => [r.risk, r]));
+      return datasetRisks.map((r) => byRisk.get(r) ?? { risk: r, entry: "", exit: "" });
+    });
+  }, [datasetRisks]);
+
+  const filteredRows = useMemo(() => {
+    const q = thresholdSearch.trim().toLowerCase();
+    if (!q) return thresholdRows;
+    return thresholdRows.filter((r) => r.risk.toLowerCase().includes(q));
+  }, [thresholdRows, thresholdSearch]);
+
+  const validThresholdCount = thresholdRows.filter(
+    (r) => r.entry !== "" && r.exit !== "" && Number.isFinite(Number(r.entry)) && Number.isFinite(Number(r.exit)),
+  ).length;
+
+  const updateThreshold = (risk: string, field: "entry" | "exit", value: string) => {
+    setThresholdRows((prev) => prev.map((r) => (r.risk === risk ? { ...r, [field]: value } : r)));
+  };
+
+  const clearAllThresholds = () => {
+    setThresholdRows((prev) => prev.map((r) => ({ ...r, entry: "", exit: "" })));
+    setSelectedRisks(new Set());
+  };
+
+  const toggleSelected = (risk: string) => {
+    setSelectedRisks((prev) => {
+      const n = new Set(prev);
+      if (n.has(risk)) n.delete(risk);
+      else n.add(risk);
+      return n;
     });
   };
+
+  const toggleSelectAllVisible = () => {
+    const visible = filteredRows.map((r) => r.risk);
+    const allSelected = visible.every((r) => selectedRisks.has(r));
+    setSelectedRisks((prev) => {
+      const n = new Set(prev);
+      if (allSelected) visible.forEach((r) => n.delete(r));
+      else visible.forEach((r) => n.add(r));
+      return n;
+    });
+  };
+
+  const applyFillSelected = () => {
+    const eOk = fillEntry !== "" && Number.isFinite(Number(fillEntry));
+    const xOk = fillExit !== "" && Number.isFinite(Number(fillExit));
+    if (!eOk && !xOk) return;
+    setThresholdRows((prev) =>
+      prev.map((r) =>
+        selectedRisks.has(r.risk)
+          ? { ...r, ...(eOk ? { entry: fillEntry } : {}), ...(xOk ? { exit: fillExit } : {}) }
+          : r,
+      ),
+    );
+  };
+
+  const handlePaste = (
+    e: React.ClipboardEvent<HTMLInputElement>,
+    startRisk: string,
+    startField: "entry" | "exit",
+  ) => {
+    const text = e.clipboardData.getData("text");
+    if (!text || !/[\n\t]/.test(text)) return; // fall back to normal single-cell paste
+    e.preventDefault();
+    const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.length > 0);
+    const startIdx = filteredRows.findIndex((r) => r.risk === startRisk);
+    if (startIdx < 0) return;
+    setThresholdRows((prev) => {
+      const map = new Map(prev.map((r) => [r.risk, { ...r }]));
+      for (let i = 0; i < lines.length; i++) {
+        const target = filteredRows[startIdx + i];
+        if (!target) break;
+        const row = map.get(target.risk);
+        if (!row) continue;
+        const cols = lines[i].split("\t");
+        if (startField === "entry") {
+          if (cols[0] !== undefined && cols[0] !== "") row.entry = cols[0].trim();
+          if (cols[1] !== undefined && cols[1] !== "") row.exit = cols[1].trim();
+        } else {
+          if (cols[0] !== undefined && cols[0] !== "") row.exit = cols[0].trim();
+        }
+      }
+      return Array.from(map.values()).sort(
+        (a, b) => datasetRisks.indexOf(a.risk) - datasetRisks.indexOf(b.risk),
+      );
+    });
+  };
+
+  const inputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  const focusNext = (currentRisk: string, field: "entry" | "exit") => {
+    const idx = filteredRows.findIndex((r) => r.risk === currentRisk);
+    const next = filteredRows[idx + 1];
+    if (!next) return;
+    inputRefs.current.get(`${next.risk}:${field}`)?.focus();
+  };
+
+  const thresholdsMap = useMemo(() => {
+    const m = new Map<string, { entry: number; exit: number }>();
+    for (const r of thresholdRows) {
+      const e = Number(r.entry);
+      const x = Number(r.exit);
+      if (r.entry !== "" && r.exit !== "" && Number.isFinite(e) && Number.isFinite(x)) {
+        m.set(r.risk, { entry: e, exit: x });
+      }
+    }
+    return m;
+  }, [thresholdRows]);
 
   const handleRun = () => {
     if (!dataset) return;
@@ -165,7 +267,7 @@ function PricingPage() {
       mode,
       targetNetRate: targetRate,
       expectedLossRatio: lossRatio,
-      thresholds: uploaded,
+      thresholds: thresholdsMap,
       distributionChoice: distChoice,
       triggerType,
     });
@@ -174,6 +276,7 @@ function PricingPage() {
       setAnalysisRisk(out.triggers[0].risk);
     }
   };
+
 
   const summary = useMemo(() => {
     if (!result || result.triggers.length === 0) return null;
@@ -375,6 +478,181 @@ function PricingPage() {
       />
 
       <div className="px-6 py-4 space-y-4">
+        {mode === "thresholds" && (
+          <section className="rounded-md border border-border bg-card p-4">
+            <div className="mb-3 flex items-end justify-between gap-3 flex-wrap">
+              <div>
+                <SectionTitle>Thresholds · Editable</SectionTitle>
+                <div className="text-[11px] text-muted-foreground">
+                  Enter Entry &amp; Exit per Risk. Press Enter to advance, paste Excel columns directly.
+                </div>
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                <span className="font-semibold text-foreground">{validThresholdCount}</span>{" "}
+                / {thresholdRows.length} risks ready ·{" "}
+                <span className="font-semibold text-foreground">{selectedRisks.size}</span> selected
+              </div>
+            </div>
+
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={thresholdSearch}
+                onChange={(e) => setThresholdSearch(e.target.value)}
+                placeholder="Search Risk…"
+                className="h-8 w-56 rounded border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+              />
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  step="any"
+                  value={fillEntry}
+                  onChange={(e) => setFillEntry(e.target.value)}
+                  placeholder="Entry"
+                  className="h-8 w-24 rounded border border-input bg-background px-2 text-xs tabular-nums outline-none focus:ring-1 focus:ring-ring"
+                />
+                <input
+                  type="number"
+                  step="any"
+                  value={fillExit}
+                  onChange={(e) => setFillExit(e.target.value)}
+                  placeholder="Exit"
+                  className="h-8 w-24 rounded border border-input bg-background px-2 text-xs tabular-nums outline-none focus:ring-1 focus:ring-ring"
+                />
+                <button
+                  onClick={applyFillSelected}
+                  disabled={selectedRisks.size === 0}
+                  className="inline-flex h-8 items-center gap-1 rounded border border-border bg-background px-2 text-[11px] hover:bg-muted disabled:opacity-50"
+                >
+                  <Wand2 size={12} /> Fill Selected
+                </button>
+              </div>
+              <button
+                onClick={clearAllThresholds}
+                className="ml-auto inline-flex h-8 items-center gap-1 rounded border border-border bg-background px-2 text-[11px] hover:bg-muted"
+              >
+                <Eraser size={12} /> Clear All
+              </button>
+            </div>
+
+            <div className="max-h-[420px] overflow-auto rounded border border-border">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 z-10 bg-muted">
+                  <tr className="text-left">
+                    <th className="w-8 px-2 py-2">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all visible"
+                        checked={
+                          filteredRows.length > 0 &&
+                          filteredRows.every((r) => selectedRisks.has(r.risk))
+                        }
+                        onChange={toggleSelectAllVisible}
+                      />
+                    </th>
+                    <th className="px-2 py-2 font-semibold uppercase tracking-wider text-[10px] text-muted-foreground">
+                      Risk
+                    </th>
+                    <th className="px-2 py-2 font-semibold uppercase tracking-wider text-[10px] text-muted-foreground">
+                      Entry
+                    </th>
+                    <th className="px-2 py-2 font-semibold uppercase tracking-wider text-[10px] text-muted-foreground">
+                      Exit
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRows.map((r, i) => {
+                    const ready =
+                      r.entry !== "" &&
+                      r.exit !== "" &&
+                      Number.isFinite(Number(r.entry)) &&
+                      Number.isFinite(Number(r.exit));
+                    return (
+                      <tr
+                        key={r.risk}
+                        className={
+                          i % 2 === 0 ? "bg-background" : "bg-muted/40"
+                        }
+                      >
+                        <td className="px-2 py-1">
+                          <input
+                            type="checkbox"
+                            checked={selectedRisks.has(r.risk)}
+                            onChange={() => toggleSelected(r.risk)}
+                          />
+                        </td>
+                        <td className="px-2 py-1 font-medium text-foreground">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span
+                              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                                ready ? "bg-primary" : "bg-muted-foreground/40"
+                              }`}
+                            />
+                            {r.risk}
+                          </span>
+                        </td>
+                        <td className="px-1 py-1">
+                          <input
+                            ref={(el) => {
+                              if (el) inputRefs.current.set(`${r.risk}:entry`, el);
+                              else inputRefs.current.delete(`${r.risk}:entry`);
+                            }}
+                            type="number"
+                            step="any"
+                            value={r.entry}
+                            onChange={(e) =>
+                              updateThreshold(r.risk, "entry", e.target.value)
+                            }
+                            onPaste={(e) => handlePaste(e, r.risk, "entry")}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                focusNext(r.risk, "entry");
+                              }
+                            }}
+                            className="h-7 w-full rounded border border-input bg-background px-2 text-xs tabular-nums outline-none focus:ring-1 focus:ring-ring"
+                          />
+                        </td>
+                        <td className="px-1 py-1">
+                          <input
+                            ref={(el) => {
+                              if (el) inputRefs.current.set(`${r.risk}:exit`, el);
+                              else inputRefs.current.delete(`${r.risk}:exit`);
+                            }}
+                            type="number"
+                            step="any"
+                            value={r.exit}
+                            onChange={(e) =>
+                              updateThreshold(r.risk, "exit", e.target.value)
+                            }
+                            onPaste={(e) => handlePaste(e, r.risk, "exit")}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                focusNext(r.risk, "exit");
+                              }
+                            }}
+                            className="h-7 w-full rounded border border-input bg-background px-2 text-xs tabular-nums outline-none focus:ring-1 focus:ring-ring"
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredRows.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-6 text-center text-xs text-muted-foreground">
+                        No risks match “{thresholdSearch}”.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+
         {/* Main 3-column workspace */}
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
           {/* Left: Pricing Inputs */}
@@ -434,29 +712,15 @@ function PricingPage() {
                 </Field>
               </>
             ) : (
-              <>
-                <Field label="Thresholds CSV">
-                  <label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded border border-dashed border-border bg-background px-2 text-xs hover:bg-muted">
-                    <Upload size={12} />
-                    <span className="truncate">
-                      {uploadedName ?? "Choose file…"}
-                    </span>
-                    <input
-                      type="file"
-                      accept=".csv"
-                      className="hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) handleFile(f);
-                      }}
-                    />
-                  </label>
-                </Field>
-                <div className="text-[11px] text-muted-foreground">
-                  {uploaded.size} threshold rows loaded
+              <div className="text-[11px] text-muted-foreground leading-relaxed">
+                Enter Entry &amp; Exit values per Risk in the table below.
+                Empty rows are excluded until both values are provided.
+                <div className="mt-1 font-semibold text-foreground">
+                  {validThresholdCount} / {thresholdRows.length} risks ready
                 </div>
-              </>
+              </div>
             )}
+
 
             <div>
               <SectionTitle>Distribution</SectionTitle>
@@ -505,7 +769,7 @@ function PricingPage() {
 
             <button
               onClick={handleRun}
-              disabled={mode === "thresholds" && uploaded.size === 0}
+              disabled={mode === "thresholds" && validThresholdCount === 0}
               className="inline-flex h-9 w-full items-center justify-center gap-2 rounded bg-primary px-4 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               <Play size={14} /> Generate Pricing
