@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Download, Loader2, Play, Search, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Download, Loader2, Play, X } from "lucide-react";
 import { AppLayout } from "@/components/AppLayout";
 import { PageHeader, StatCard, SectionTitle } from "@/components/PageHeader";
 import { Field, SelectInput } from "@/components/Field";
 import { DataTable, type Column } from "@/components/DataTable";
+import { MunicipalityTree } from "@/components/MunicipalityTree";
 import { loadHistoricalData, loadMunicipalities } from "@/lib/data-loader";
 import { buildDataset } from "@/utils/builder/aggregation";
 import { exportBuilderDataset } from "@/lib/export";
@@ -71,165 +72,8 @@ function SectionCard({
   );
 }
 
-function MunicipalityPicker({
-  munis,
-  selected,
-  setSelected,
-  loading,
-}: {
-  munis: Municipality[];
-  selected: string[];
-  setSelected: (v: string[]) => void;
-  loading: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
 
-  const filtered = useMemo(() => {
-    if (!q) return munis;
-    const s = q.toLowerCase();
-    return munis.filter(
-      (m) =>
-        m.nm_mun.toLowerCase().includes(s) || m.uf.toLowerCase().includes(s),
-    );
-  }, [munis, q]);
-
-  const selSet = useMemo(() => new Set(selected), [selected]);
-  const visibleAllSelected =
-    filtered.length > 0 && filtered.every((m) => selSet.has(m.cd_mun));
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex h-9 w-full items-center justify-between rounded border border-input bg-background px-3 text-xs hover:border-ring"
-      >
-        <span className="flex items-center gap-2">
-          <Search size={12} className="text-muted-foreground" />
-          {selected.length === 0 ? (
-            <span className="text-muted-foreground">Select municipalities…</span>
-          ) : (
-            <span className="tabular-nums">
-              {selected.length} selected
-            </span>
-          )}
-        </span>
-        <ChevronDown size={12} className="text-muted-foreground" />
-      </button>
-
-      {open && (
-        <div className="absolute z-30 mt-1 w-full rounded-md border border-border bg-popover shadow-lg">
-          <div className="flex items-center gap-2 border-b border-border px-2 py-1.5">
-            <Search size={12} className="text-muted-foreground" />
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search municipality or UF…"
-              className="h-7 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-            />
-            {q && (
-              <button
-                onClick={() => setQ("")}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X size={12} />
-              </button>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between border-b border-border px-2 py-1.5 text-[11px]">
-            <button
-              onClick={() => {
-                const next = new Set(selSet);
-                if (visibleAllSelected) {
-                  filtered.forEach((m) => next.delete(m.cd_mun));
-                } else {
-                  filtered.forEach((m) => next.add(m.cd_mun));
-                }
-                setSelected([...next]);
-              }}
-              className="font-medium text-primary hover:underline"
-            >
-              {visibleAllSelected ? "Deselect all (filtered)" : "Select all (filtered)"}
-            </button>
-            <button
-              onClick={() => setSelected([])}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              Clear selection
-            </button>
-          </div>
-
-          <div className="max-h-64 overflow-auto py-1">
-            {loading ? (
-              <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
-                <Loader2 size={12} className="animate-spin" /> Loading…
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground">
-                No matches.
-              </div>
-            ) : (
-              filtered.slice(0, 400).map((m) => {
-                const checked = selSet.has(m.cd_mun);
-                return (
-                  <button
-                    key={m.cd_mun}
-                    onClick={() => {
-                      const next = new Set(selSet);
-                      if (checked) next.delete(m.cd_mun);
-                      else next.add(m.cd_mun);
-                      setSelected([...next]);
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-muted"
-                  >
-                    <span
-                      className={`flex h-3.5 w-3.5 items-center justify-center rounded border ${
-                        checked
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-input bg-background"
-                      }`}
-                    >
-                      {checked && <Check size={10} strokeWidth={3} />}
-                    </span>
-                    <span className="flex-1 truncate">{m.nm_mun}</span>
-                    <span className="text-[10px] text-muted-foreground">{m.uf}</span>
-                  </button>
-                );
-              })
-            )}
-            {filtered.length > 400 && (
-              <div className="px-3 py-1 text-[10px] text-muted-foreground">
-                Showing 400 of {filtered.length.toLocaleString()} — refine search.
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">
-            <span>{selected.length.toLocaleString()} selected</span>
-            <button
-              onClick={() => setOpen(false)}
-              className="font-medium text-foreground hover:underline"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function BuilderPage() {
   const [raw, setRaw] = useState<RawObservation[] | null>(null);
@@ -534,7 +378,7 @@ function BuilderPage() {
                   />
                 </Field>
                 <Field label="Municipalities">
-                  <MunicipalityPicker
+                  <MunicipalityTree
                     munis={munis}
                     selected={selectedMunis}
                     setSelected={setSelectedMunis}
